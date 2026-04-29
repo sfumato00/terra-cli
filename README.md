@@ -18,9 +18,133 @@ data-platform engineers who already live in Jupyter have no native way to
 gap: plans and state become DataFrames; the resource graph becomes a widget;
 risky changes get scored in a notebook cell before anyone runs `apply`.
 
+Two concrete pain points this solves:
+
+- **Corrupted state from wrong workflow.** Terraform's replace/move/import
+  semantics are non-obvious. `terra` surfaces implicit destroys, missing
+  `create_before_destroy` guards, and module-address changes (which need
+  `terraform state mv`, not a new resource) *before* `apply` runs.
+- **Unintended destroy/reprovision from cloud-init changes.** `user_data`
+  mutations force instance replacement. `terra` decodes and diffs `user_data`
+  blobs in the changes DataFrame so you can see exactly what changed in a
+  notebook cell instead of discovering it after the fact.
+
 The dependency-graph and (stretch) drift abstractions translate naturally to
 multi-cluster orchestration work — the kind of platform tooling listed on the
 BQuant JD. The W4 local-k3s drift demo is the proof point.
+
+---
+
+## Status
+
+| Phase | Status | What shipped |
+|-------|--------|--------------|
+| W1 — schema + frame core | **done** | Pydantic models, DataFrame flatteners, loaders, CLI stub, 23 tests, 84% coverage |
+| W2 — magic + graph | **done** | `%%terraform` magic, ipycytoscape widget, filter panel |
+| W3 — remote state + risk | planned | S3 loader, risk scorer, PyPI publish |
+| W4 — k3s drift (stretch) | planned | Local k3s drift DataFrame |
+
+---
+
+## Installation
+
+```bash
+pip install -e .                  # core (no notebook widgets)
+pip install -e ".[notebook]"      # adds ipycytoscape + ipywidgets
+pip install -e ".[dev]"           # adds pytest, mypy, ruff, moto
+```
+
+Requires Python ≥ 3.12. No Terraform binary needed for the Python API when
+working from pre-exported JSON files (`plan_json`, `state_local`). The
+`terra.load.plan()` loader shells out to `terraform show -json` and requires
+a Terraform binary on `$PATH`.
+
+---
+
+## Quickstart
+
+### In a notebook
+
+```python
+import terra
+
+# --- state ---
+state = terra.load.state_local("terraform.tfstate")
+df    = terra.frame.resources_df(state)
+
+df                                                   # all resources
+df.query("type == 'aws_s3_bucket' and module == ''") # filter to root-level S3
+df.query("type.str.startswith('aws_iam')")           # all IAM resources
+
+# --- plan ---
+plan    = terra.load.plan_json("plan.json")          # from pre-exported JSON
+# plan  = terra.load.plan("tfplan.bin")              # shells out to terraform
+
+terra.frame.summary(plan)
+# {'add': 3, 'change': 1, 'destroy': 0, 'no-op': 2}
+
+changes = terra.frame.changes_df(plan)
+changes[["address", "type", "actions", "attr_diff"]]
+
+# --- dependency graph (W2) ---
+g = terra.graph.from_state(state)   # networkx.DiGraph from dependencies field
+terra.graph.render(g)               # ipycytoscape widget — requires [notebook] extra
+
+g_plan = terra.graph.from_plan(plan)  # DiGraph from configuration.*.expressions.references
+terra.graph.render(g_plan)
+
+# --- remote state (W3) ---
+state = terra.load.state_s3("my-tf-bucket", "prod/terraform.tfstate")
+```
+
+### CLI
+
+```bash
+# Step 1: Create a binary plan file
+terraform plan -out=tfplan.bin
+
+# Step 2: Convert it to JSON
+terraform show -json tfplan.bin > plan.json
+
+# Summarise add/change/destroy counts
+terra summary plan.json
+
+# Print resources table from a local state file
+terra resources terraform.tfstate
+```
+
+### IPython magic (W2)
+
+```python
+# In a Jupyter kernel, load the extension once per session:
+%load_ext terra
+```
+
+```
+%%terraform plan -out=tfplan
+# Runs `terraform plan -out=tfplan`, parses the binary plan via
+# `terraform show -json`, and binds the result to _plan.
+```
+
+```python
+# Bind to a custom variable name:
+%%terraform plan --var prod_plan -out=tfplan
+terra.frame.summary(prod_plan)
+```
+
+Requires `terraform` on `$PATH`. If the binary is absent the magic prints an
+error and returns without raising, so the rest of the notebook continues.
+
+### Running the notebooks
+
+```bash
+cd notebooks
+jupyter notebook 01_quickstart.ipynb           # W1: DataFrames
+jupyter notebook 02_dependency_graph.ipynb     # W2: graph + filter panel
+```
+
+Both notebooks load `tests/fixtures/state.json` and `tests/fixtures/plan.json`
+(committed canned data — no live AWS or Terraform binary needed).
 
 ---
 
@@ -83,9 +207,11 @@ export to Parquet via PyArrow.
 ## Data flow, end to end
 
 1. **Acquire JSON.** `terra.load.plan(path)` shells out to
-   `terraform show -json plan.bin`. `terra.load.state_local(path)` reads
-   `terraform.tfstate`. `terra.load.state_s3(bucket, key)` uses `boto3` (with
-   optional DynamoDB lock awareness — read-only, never touch the lock).
+   `terraform show -json plan.bin`. `terra.load.plan_json(path)` reads a
+   pre-exported JSON directly (no Terraform binary needed).
+   `terra.load.state_local(path)` reads `terraform.tfstate`.
+   `terra.load.state_s3(bucket, key)` uses `boto3` (with optional DynamoDB
+   lock awareness — read-only, never touch the lock).
 2. **Parse.** Raw JSON → `terra.schema.Plan` / `terra.schema.State` via
    Pydantic v2. Schemas track the documented Terraform plan/state JSON
    formats (`format_version` 1.x for plan, 4 for state). Unknown fields are
@@ -106,7 +232,12 @@ export to Parquet via PyArrow.
 6. **Risk score.** `terra.risk.score(changes_df)` applies a rules pack:
    deletes on stateful resources (RDS, EBS) → high; replaces on resources
    with no `create_before_destroy` → high; in-place updates on tags only →
-   low. Output adds `risk` and `risk_reasons` columns.
+   low; implicit replace of a resource whose address changed (needs
+   `state mv`) → high; `user_data` mutation on an instance (forces reprovision)
+   → high. Output adds `risk` and `risk_reasons` columns.
+   `terra.risk.blast_radius(g, address)` returns the set of downstream
+   resources that will be affected if the given resource is destroyed or
+   replaced.
 7. **Magic.** `%%terraform plan -out=tfplan` runs the command, captures
    stdout/stderr, parses the resulting plan, and binds it to a user variable
    (default `_plan`).
@@ -127,10 +258,10 @@ terra/
     __init__.py
     plan.py            # Pydantic: Plan, ResourceChange, Configuration
     state.py           # Pydantic: State, Resource, Module
-    common.py          # shared enums (Action, Mode), Provider
+    common.py          # shared enums (Action, Mode)
   load/
     __init__.py
-    local.py           # plan(path), state_local(path), runs terraform CLI
+    local.py           # plan(path), plan_json(path), state_local(path)
     s3.py              # state_s3(bucket, key, profile=None)
   frame/
     __init__.py
@@ -138,15 +269,15 @@ terra/
     changes.py         # changes_df(plan), summary(plan)
     _flatten.py        # shared module-tree walker
   graph/
-    __init__.py
+    __init__.py        # W2
     build.py           # from_state, from_plan → networkx.DiGraph
     render.py          # render(g) → CytoscapeWidget; styles per resource type
   risk/
-    __init__.py
+    __init__.py        # W3
     rules.py           # rule registry
     score.py           # score(changes_df)
   magic/
-    __init__.py        # load_ipython_extension
+    __init__.py        # W2
     terraform.py       # %%terraform cell magic
   drift/               # W4 stretch — local k3s only
     __init__.py
@@ -154,16 +285,17 @@ terra/
   cli.py               # `terra` entrypoint via click — thin wrapper
 notebooks/
   01_quickstart.ipynb
-  02_dependency_graph.ipynb
-  03_remote_state_and_risk.ipynb
-  04_k3s_drift.ipynb           # W4 stretch
+  02_dependency_graph.ipynb  # W2
+  03_remote_state_and_risk.ipynb  # W3
+  04_k3s_drift.ipynb             # W4 stretch
 tests/
   fixtures/            # canned plan.json, state.json
+  conftest.py
   test_schema.py
   test_frame.py
-  test_graph.py
-  test_risk.py
-  test_magic.py
+  test_graph.py        # W2
+  test_risk.py         # W3
+  test_magic.py        # W2
   test_drift_k3s.py    # W4 stretch
 pyproject.toml
 .github/workflows/ci.yml
@@ -176,25 +308,56 @@ pyproject.toml
 ```python
 import terra
 
+# State → resources DataFrame
+state = terra.load.state_local("terraform.tfstate")
+# or from S3:
 state = terra.load.state_s3("my-tf-bucket", "prod/terraform.tfstate")
-df    = terra.frame.resources_df(state)
+
+df = terra.frame.resources_df(state)
 df.query("type == 'aws_s3_bucket' and module == ''")
 
-plan  = terra.load.plan("tfplan.bin")
+# Plan → changes DataFrame + summary
+plan    = terra.load.plan_json("plan.json")   # pre-exported JSON
+# plan = terra.load.plan("tfplan.bin")        # shells out to terraform
+
 terra.frame.summary(plan)            # {'add': 3, 'change': 1, 'destroy': 0}
 changes = terra.frame.changes_df(plan)
-risky   = terra.risk.score(changes).query("risk == 'high'")
+changes.query("'delete' in actions") # destructive changes only
 
-g = terra.graph.from_state(state)
-terra.graph.render(g)                # CytoscapeWidget in the cell
+# Dependency graph
+g = terra.graph.from_state(state)    # DiGraph from state dependencies
+terra.graph.render(g)                # ipycytoscape widget in the cell
+
+g = terra.graph.from_plan(plan)      # DiGraph from config references
+terra.graph.render(g)
+
+# Risk scoring (W3)
+scored  = terra.risk.score(changes)
+scored.query("risk == 'high'")[["address", "risk", "risk_reasons"]]
+
+# Blast-radius: resources destroyed/replaced if `address` changes (W3)
+import networkx as nx
+affected = terra.risk.blast_radius(g, "aws_instance.web")   # set of addresses
+
+# cloud-init / user_data diff (W3)
+terra.risk.user_data_diff(changes)   # decoded before/after for each instance change
+
+# State diff: what actually changed between two applies (W3)
+before = terra.load.state_local("terraform.tfstate.backup")
+after  = terra.load.state_local("terraform.tfstate")
+terra.frame.state_diff(before, after)  # DataFrame of added/removed/changed resources
 ```
 
 ```python
+# IPython magic — load once per kernel session
 %load_ext terra
 ```
 ```
 %%terraform plan -out=tfplan
-# any tf args; result bound to _plan automatically
+# Runs terraform, parses the plan, binds result to _plan.
+
+%%terraform plan --var prod_plan -out=tfplan
+# Bind to a custom variable instead of _plan.
 ```
 
 W4 stretch:
@@ -205,11 +368,37 @@ drift.groupby("drift_type").size()
 
 ---
 
+## Development
+
+```bash
+# install with dev extras
+pip install -e ".[dev]"
+
+# lint + format
+ruff check terra tests
+ruff format terra tests
+
+# type check (strict)
+mypy terra/schema terra/frame terra/load terra/cli.py
+
+# tests with coverage
+pytest
+
+# single module
+pytest tests/test_frame.py -v
+```
+
+CI runs the full matrix on Python 3.12 via GitHub Actions
+(`.github/workflows/ci.yml`): lint → format check → mypy → pytest (≥80%
+coverage required).
+
+---
+
 ## Tech-stack mapping (each piece has a specific job)
 
 | Tech                  | Role in the system                                                |
 |-----------------------|-------------------------------------------------------------------|
-| Python 3.11           | Host language; uses `match`, PEP 695 type aliases.                |
+| Python 3.12           | Host language; uses `match`, PEP 695 type aliases.                |
 | Pydantic v2           | Parse + validate Terraform plan/state JSON into typed objects.    |
 | pandas                | DataFrame surface for resources, changes, risk.                   |
 | PyArrow               | Typed columnar backing; Parquet cache of parsed state.            |
@@ -222,7 +411,7 @@ drift.groupby("drift_type").size()
 | pytest                | Unit + integration tests against canned plan/state fixtures.      |
 | mypy (strict)         | Type-checks the Pydantic-typed core.                              |
 | ruff                  | Lint + format.                                                    |
-| GitHub Actions        | CI matrix: 3.11/3.12, lint → typecheck → test → build wheel.      |
+| GitHub Actions        | CI matrix: 3.12, lint → typecheck → test → build wheel.      |
 | kubernetes (client)   | **W4 stretch only.** Read live objects from a local k3s node.     |
 | k3s                   | **W4 stretch only.** Single-node local cluster used as the drift target. |
 
@@ -230,55 +419,81 @@ drift.groupby("drift_type").size()
 
 ## Implementation plan
 
-### Weekend 1 — schema + frame core (MVP)
-- [ ] `pyproject.toml` (hatch), package skeleton, ruff + mypy + pytest configured.
-- [ ] Pydantic models: `Plan`, `State`, `ResourceChange`, `Resource`,
+### Weekend 1 — schema + frame core (MVP) ✓
+- [x] `pyproject.toml` (hatch), package skeleton, ruff + mypy + pytest configured.
+- [x] Pydantic models: `Plan`, `State`, `ResourceChange`, `Resource`,
       `Configuration`, `Module`. Pin to plan format 1.x / state format 4.
-- [ ] Fixture set: capture `terraform show -json` output for a small AWS
-      module; commit under `tests/fixtures/`.
-- [ ] `terra.frame.resources_df(state)` — recursive module walk, returns a
+- [x] Fixture set: canned `plan.json` and `state.json` under `tests/fixtures/`.
+- [x] `terra.frame.resources_df(state)` — recursive module walk, returns a
       typed DataFrame. PyArrow dtypes for `module`, `provider`.
-- [ ] `terra.frame.changes_df(plan)` and `terra.frame.summary(plan)`.
-- [ ] `terra.load.plan` / `state_local` (subprocess to `terraform`).
-- [ ] CI green: lint, mypy --strict on `terra.schema` and `terra.frame`,
-      pytest with ≥80% coverage on those two modules.
-- [ ] `notebooks/01_quickstart.ipynb` — load fixture, show both DataFrames,
+- [x] `terra.frame.changes_df(plan)` and `terra.frame.summary(plan)`.
+- [x] `terra.load.plan` / `state_local` (subprocess to `terraform`) +
+      `terra.load.plan_json` (no binary needed).
+- [x] CI green: lint, mypy --strict on `terra.schema` and `terra.frame`,
+      pytest with 84% coverage (≥80% required).
+- [x] `notebooks/01_quickstart.ipynb` — load fixture, show both DataFrames,
       run `summary`. Committed with outputs cleared.
 
 **Deliverable:** `pip install -e .` then run the quickstart notebook end to
-end on the committed fixture.
+end on the committed fixture. ✓
 
-### Weekend 2 — magic + graph (v0.2)
-- [ ] `terra.magic.terraform` — IPython cell magic. Parses argstring, runs
-      `terraform <subcmd>` in a temp dir or the notebook cwd, captures plan
-      file, parses it, binds to `_plan` (or `--var name`).
-- [ ] `terra.graph.build.from_state` — `dependencies` field → `DiGraph`.
-- [ ] `terra.graph.build.from_plan` — references in `configuration` →
-      DiGraph with edges annotated by referenced attribute.
-- [ ] `terra.graph.render` — `CytoscapeWidget` with per-type icons/colors,
-      hover shows `address`, click highlights downstream nodes (blast radius).
-- [ ] `ipywidgets` filter panel: dropdowns for module / provider / action;
-      filtering rebinds the graph and the changes DataFrame.
-- [ ] `notebooks/02_dependency_graph.ipynb` — graph + filter widget demo.
-- [ ] Tests: graph isomorphism against a hand-rolled expected graph for the
-      fixture; magic test using `IPython.testing`.
+### Weekend 2 — magic + graph (v0.2) ✓
+- [x] `terra.magic.terraform` — IPython cell magic. Parses argstring, runs
+      `terraform <subcmd>`, captures plan file, parses it, binds to `_plan`
+      (or `--var name`). Exits cleanly when `terraform` is not on `$PATH`.
+- [x] `terra.graph.build.from_state` — `dependencies` field → `DiGraph`.
+- [x] `terra.graph.build.from_plan` — references in `configuration` →
+      `DiGraph` with edges from `expressions.*.references`.
+- [x] `terra.graph.render` — `CytoscapeWidget` with per-type colors, node
+      labels set to resource address, `cose` layout. Raises `ImportError`
+      with install hint when ipycytoscape is absent.
+- [x] `ipywidgets` filter panel: dropdowns for module / provider / action;
+      filtering rebinds the subgraph and the changes DataFrame in notebook 02.
+- [x] `notebooks/02_dependency_graph.ipynb` — state graph, plan graph, filter
+      widget demo, and `%%terraform` magic example.
+- [x] Tests: node/edge counts and isomorphism for fixture graphs
+      (`test_graph.py`, 17 tests); magic registration, arg parsing, and
+      subprocess mocking via `IPython.testing` (`test_magic.py`, 11 tests).
+      Coverage: 81.6% (≥80% required). CI green.
 
 **Deliverable:** opening notebook 02 produces an interactive graph widget;
-`%%terraform plan` works in a fresh kernel.
+`%%terraform plan` works in a fresh kernel. ✓
 
 ### Weekend 3 — remote state + risk + ship (v0.3)
 - [ ] `terra.load.s3` — boto3 client, supports profile + assume-role.
       Read only. Lock object detection (warn if `terraform.tfstate.tflock`
       exists) but never write.
-- [ ] `terra.risk.score` — rule pack v1: stateful-delete, no-CBD-replace,
-      cross-module reference break, IAM widening (regex on policy docs).
-      Each rule is a `Callable[[pd.Series], tuple[Risk, str] | None]`.
+- [ ] `terra.risk.score` — rule pack v1 (each rule is a
+      `Callable[[pd.Series], tuple[Risk, str] | None]`):
+  - Stateful delete: `delete` on RDS, EBS, S3 → high.
+  - No-CBD replace: resource forces replacement without
+    `create_before_destroy = true` → high.
+  - Address change (implicit destroy): resource address moved between
+    modules without `terraform state mv` → high; suggest the mv command.
+  - IAM widening: regex on policy docs detects `*` actions or
+    `*` resources added → high.
+  - `user_data` mutation: any change to `user_data` /
+    `user_data_base64` on an instance type → high (forces reprovision).
+  - Tag-only update → low.
+- [ ] `terra.risk.blast_radius(g, address)` — returns
+      `nx.descendants(g, address)`; highlights the set of resources that
+      will be tainted if the given resource is destroyed or replaced.
+- [ ] `terra.risk.user_data_diff(changes_df)` — for rows where
+      `user_data` or `user_data_base64` appears in `attr_diff`, decode
+      base64, split on `\n`, and return a unified diff per row.
+      Surfaces cloud-init changes that would otherwise be buried in a
+      base64 blob.
+- [ ] `terra.frame.state_diff(before, after)` — compare two `State`
+      objects (e.g. `.tfstate.backup` vs `.tfstate`); return a DataFrame
+      with columns `address`, `diff_type` (added/removed/changed),
+      `changed_attrs`.
 - [ ] `terra` CLI via click: `terra summary <plan>`, `terra graph --out
       graph.html` (export widget as standalone HTML), `terra risk <plan>`.
 - [ ] Parquet cache: `state.to_parquet(path)` round-trip via PyArrow; loader
       skips re-parsing if cache fresher than source.
 - [ ] `notebooks/03_remote_state_and_risk.ipynb` — pull state from S3
-      (LocalStack or moto in CI), render graph, risk-score upcoming changes.
+      (LocalStack or moto in CI), render graph, risk-score upcoming changes,
+      show `user_data_diff` and `blast_radius` for a sample plan.
 - [ ] PyPI publish via GitHub Actions on tag (`v0.3.0`); trusted publisher,
       no API token in repo.
 - [ ] README badges: PyPI, CI, coverage, mypy strict.
@@ -337,6 +552,15 @@ across major versions. Pin to Terraform ≥1.6 and capture exact
 **Before W3.** Risk-rule severity thresholds: do we expose a config file or
 hardcode v1? Decision: hardcode v1, expose `terra.risk.rules.register()` for
 extension; config file is post-v0.3.
+
+**Before W3 (user_data diff).** `user_data` can be raw shell script,
+base64-encoded gzip, or a cloud-init YAML multipart. Scope for v0.3: decode
+base64, attempt gzip decompress, fall back to raw text; output a unified diff.
+Full cloud-init YAML parsing (merge keys, write_files, etc.) is post-v0.3.
+
+**Before W3 (state diff).** `terraform.tfstate.backup` is only written on
+successful applies, not on plan. Scope: diff any two local state files the
+user provides; do not try to auto-detect the backup path.
 
 **Before W4 (stretch).** ipycytoscape is maintenance-mode; if it bitrots,
 fall back to `ipysigma` or `pyvis`. Keep `terra.graph.render`'s return type
