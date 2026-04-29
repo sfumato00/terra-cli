@@ -1,0 +1,117 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.0",
+  "variables": {},
+  "planned_values": {
+    "root_module": {
+      "resources": []
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "aws_s3_bucket.logs",
+      "mode": "managed",
+      "type": "aws_s3_bucket",
+      "name": "logs",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "bucket": "my-logs-bucket",
+          "region": "us-east-1"
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_iam_role.lambda_exec",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "lambda_exec",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "name": "lambda-exec-role",
+          "tags": {}
+        },
+        "after": {
+          "name": "lambda-exec-role",
+          "tags": {"env": "prod"}
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "aws_rds_cluster.db",
+      "mode": "managed",
+      "type": "aws_rds_cluster",
+      "name": "db",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["delete"],
+        "before": {
+          "cluster_identifier": "prod-db",
+          "engine": "aurora-postgresql"
+        },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "data.aws_caller_identity.current",
+      "mode": "data",
+      "type": "aws_caller_identity",
+      "name": "current",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"account_id": "123456789012"},
+        "after": {"account_id": "123456789012"},
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    }
+  ],
+  "configuration": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_s3_bucket.logs",
+          "mode": "managed",
+          "type": "aws_s3_bucket",
+          "name": "logs",
+          "provider_config_key": "aws",
+          "expressions": {
+            "bucket": {"constant_value": "my-logs-bucket"}
+          },
+          "schema_version": 0
+        },
+        {
+          "address": "aws_iam_role.lambda_exec",
+          "mode": "managed",
+          "type": "aws_iam_role",
+          "name": "lambda_exec",
+          "provider_config_key": "aws",
+          "expressions": {},
+          "schema_version": 0
+        }
+      ],
+      "module_calls": {}
+    },
+    "provider_config": {
+      "aws": {
+        "name": "aws",
+        "full_name": "registry.terraform.io/hashicorp/aws"
+      }
+    }
+  }
+}

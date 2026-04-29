@@ -1,0 +1,74 @@
+{
+  "format_version": "4",
+  "terraform_version": "1.7.0",
+  "serial": 12,
+  "lineage": "abc-123",
+  "values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_s3_bucket.assets",
+          "mode": "managed",
+          "type": "aws_s3_bucket",
+          "name": "assets",
+          "provider_name": "registry.terraform.io/hashicorp/aws",
+          "schema_version": 0,
+          "values": {
+            "bucket": "my-assets-bucket",
+            "region": "us-east-1"
+          },
+          "sensitive_values": {},
+          "dependencies": []
+        },
+        {
+          "address": "aws_iam_role.lambda_exec",
+          "mode": "managed",
+          "type": "aws_iam_role",
+          "name": "lambda_exec",
+          "provider_name": "registry.terraform.io/hashicorp/aws",
+          "schema_version": 0,
+          "values": {
+            "name": "lambda-exec-role",
+            "assume_role_policy": "{}"
+          },
+          "sensitive_values": {},
+          "dependencies": []
+        }
+      ],
+      "child_modules": [
+        {
+          "address": "module.networking",
+          "resources": [
+            {
+              "address": "module.networking.aws_vpc.main",
+              "mode": "managed",
+              "type": "aws_vpc",
+              "name": "main",
+              "provider_name": "registry.terraform.io/hashicorp/aws",
+              "schema_version": 1,
+              "values": {
+                "cidr_block": "10.0.0.0/16"
+              },
+              "sensitive_values": {},
+              "dependencies": []
+            },
+            {
+              "address": "module.networking.aws_subnet.public",
+              "mode": "managed",
+              "type": "aws_subnet",
+              "name": "public",
+              "provider_name": "registry.terraform.io/hashicorp/aws",
+              "schema_version": 1,
+              "values": {
+                "cidr_block": "10.0.1.0/24"
+              },
+              "sensitive_values": {},
+              "dependencies": ["module.networking.aws_vpc.main"]
+            }
+          ],
+          "child_modules": []
+        }
+      ]
+    }
+  }
+}
