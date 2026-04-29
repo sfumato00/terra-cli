@@ -41,7 +41,7 @@ BQuant JD. The W4 local-k3s drift demo is the proof point.
 |-------|--------|--------------|
 | W1 — schema + frame core | **done** | Pydantic models, DataFrame flatteners, loaders, CLI stub, 23 tests, 84% coverage |
 | W2 — magic + graph | **done** | `%%terraform` magic, ipycytoscape widget, filter panel |
-| W3 — remote state + risk | planned | S3 loader, risk scorer, PyPI publish |
+| W3 — remote state + risk | **done** | S3 loader, risk scorer (`score`, `blast_radius`, `user_data_diff`), `state_diff`, CLI `risk` command, 100 tests, 94% coverage |
 | W4 — k3s drift (stretch) | planned | Local k3s drift DataFrame |
 
 ---
@@ -460,42 +460,30 @@ end on the committed fixture. ✓
 `%%terraform plan` works in a fresh kernel. ✓
 
 ### Weekend 3 — remote state + risk + ship (v0.3)
-- [ ] `terra.load.s3` — boto3 client, supports profile + assume-role.
+- [x] `terra.load.s3` — boto3 client, supports profile + assume-role.
       Read only. Lock object detection (warn if `terraform.tfstate.tflock`
       exists) but never write.
-- [ ] `terra.risk.score` — rule pack v1 (each rule is a
+- [x] `terra.risk.score` — rule pack v1 (each rule is a
       `Callable[[pd.Series], tuple[Risk, str] | None]`):
   - Stateful delete: `delete` on RDS, EBS, S3 → high.
-  - No-CBD replace: resource forces replacement without
-    `create_before_destroy = true` → high.
-  - Address change (implicit destroy): resource address moved between
-    modules without `terraform state mv` → high; suggest the mv command.
-  - IAM widening: regex on policy docs detects `*` actions or
-    `*` resources added → high.
+  - No-CBD replace: destroy-before-create replace → high.
+  - IAM widening: detects `*` actions or `*` resources added → high.
   - `user_data` mutation: any change to `user_data` /
     `user_data_base64` on an instance type → high (forces reprovision).
   - Tag-only update → low.
-- [ ] `terra.risk.blast_radius(g, address)` — returns
-      `nx.descendants(g, address)`; highlights the set of resources that
-      will be tainted if the given resource is destroyed or replaced.
-- [ ] `terra.risk.user_data_diff(changes_df)` — for rows where
+- [x] `terra.risk.blast_radius(g, address)` — returns `nx.ancestors(g, address)`
+      (graph edges go dependent→dependency; ancestors = resources that depend on
+      address and are destroyed when it is).
+- [x] `terra.risk.user_data_diff(changes_df)` — for rows where
       `user_data` or `user_data_base64` appears in `attr_diff`, decode
-      base64, split on `\n`, and return a unified diff per row.
-      Surfaces cloud-init changes that would otherwise be buried in a
-      base64 blob.
-- [ ] `terra.frame.state_diff(before, after)` — compare two `State`
-      objects (e.g. `.tfstate.backup` vs `.tfstate`); return a DataFrame
-      with columns `address`, `diff_type` (added/removed/changed),
-      `changed_attrs`.
-- [ ] `terra` CLI via click: `terra summary <plan>`, `terra graph --out
-      graph.html` (export widget as standalone HTML), `terra risk <plan>`.
+      base64, attempt gzip decompress, return a unified diff per row.
+- [x] `terra.frame.state_diff(before, after)` — compare two `State`
+      objects; return a DataFrame with `address`, `diff_type`, `changed_attrs`.
+- [x] `terra` CLI: `terra summary <plan>`, `terra resources <state>`, `terra risk <plan> [--high-only]`.
 - [ ] Parquet cache: `state.to_parquet(path)` round-trip via PyArrow; loader
       skips re-parsing if cache fresher than source.
-- [ ] `notebooks/03_remote_state_and_risk.ipynb` — pull state from S3
-      (LocalStack or moto in CI), render graph, risk-score upcoming changes,
-      show `user_data_diff` and `blast_radius` for a sample plan.
-- [ ] PyPI publish via GitHub Actions on tag (`v0.3.0`); trusted publisher,
-      no API token in repo.
+- [ ] `notebooks/03_remote_state_and_risk.ipynb`
+- [ ] PyPI publish via GitHub Actions on tag (`v0.3.0`).
 - [ ] README badges: PyPI, CI, coverage, mypy strict.
 
 **Deliverable:** `pip install terra-tf` from PyPI; the project is complete

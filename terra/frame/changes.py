@@ -26,6 +26,8 @@ _SCHEMA = pa.schema(
 def changes_df(plan: Plan) -> pd.DataFrame:
     """Flatten plan.resource_changes into a typed DataFrame."""
     rows: list[dict] = []
+    before_vals: list[dict] = []
+    after_vals: list[dict] = []
     for rc in plan.resource_changes:
         before = rc.change.before or {}
         after = rc.change.after or {}
@@ -44,12 +46,17 @@ def changes_df(plan: Plan) -> pd.DataFrame:
                 "attr_diff": attr_diff,
             }
         )
+        before_vals.append(before)
+        after_vals.append(after)
 
     if not rows:
         return _empty()
 
     table = pa.Table.from_pylist(rows, schema=_SCHEMA)
-    return table.to_pandas()
+    df = table.to_pandas()
+    df["before"] = before_vals
+    df["after"] = after_vals
+    return df
 
 
 def summary(plan: Plan) -> dict[str, int]:

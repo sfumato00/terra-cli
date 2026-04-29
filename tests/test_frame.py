@@ -1,8 +1,9 @@
 import pandas as pd
 
-from terra.frame import changes_df, resources_df, summary
+from terra.frame import changes_df, resources_df, state_diff, summary
 from terra.schema.plan import Plan
-from terra.schema.state import State
+from terra.schema.state import Module, Resource, State, StateValues
+from terra.schema.common import Mode
 
 
 class TestResourcesDf:
@@ -78,6 +79,88 @@ class TestChangesDf:
         empty = Plan(format_version="1.2")
         df = changes_df(empty)
         assert len(df) == 0
+
+
+class TestStateDiff:
+    def _make_state(self, resources: list[dict]) -> State:
+        rs = [
+            Resource(
+                address=r["address"],
+                mode=Mode.MANAGED,
+                type=r["type"],
+                name=r["address"].split(".")[-1],
+                provider_name="registry.terraform.io/hashicorp/aws",
+                values=r.get("values", {}),
+            )
+            for r in resources
+        ]
+        return State(
+            format_version="4",
+            values=StateValues(root_module=Module(resources=rs)),
+        )
+
+    def test_added_resource(self) -> None:
+        before = self._make_state([{"address": "aws_s3_bucket.a", "type": "aws_s3_bucket"}])
+        after = self._make_state([
+            {"address": "aws_s3_bucket.a", "type": "aws_s3_bucket"},
+            {"address": "aws_s3_bucket.b", "type": "aws_s3_bucket"},
+        ])
+        df = state_diff(before, after)
+        added = df[df["address"] == "aws_s3_bucket.b"]
+        assert len(added) == 1
+        assert added.iloc[0]["diff_type"] == "added"
+
+    def test_removed_resource(self) -> None:
+        before = self._make_state([
+            {"address": "aws_s3_bucket.a", "type": "aws_s3_bucket"},
+            {"address": "aws_s3_bucket.b", "type": "aws_s3_bucket"},
+        ])
+        after = self._make_state([{"address": "aws_s3_bucket.a", "type": "aws_s3_bucket"}])
+        df = state_diff(before, after)
+        removed = df[df["address"] == "aws_s3_bucket.b"]
+        assert len(removed) == 1
+        assert removed.iloc[0]["diff_type"] == "removed"
+
+    def test_changed_resource(self) -> None:
+        before = self._make_state([
+            {"address": "aws_s3_bucket.a", "type": "aws_s3_bucket", "values": {"region": "us-east-1"}}
+        ])
+        after = self._make_state([
+            {"address": "aws_s3_bucket.a", "type": "aws_s3_bucket", "values": {"region": "us-west-2"}}
+        ])
+        df = state_diff(before, after)
+        changed = df[df["address"] == "aws_s3_bucket.a"]
+        assert len(changed) == 1
+        assert changed.iloc[0]["diff_type"] == "changed"
+        assert "region" in changed.iloc[0]["changed_attrs"]
+
+    def test_unchanged_resource_not_in_diff(self) -> None:
+        before = self._make_state([
+            {"address": "aws_s3_bucket.a", "type": "aws_s3_bucket", "values": {"region": "us-east-1"}}
+        ])
+        after = self._make_state([
+            {"address": "aws_s3_bucket.a", "type": "aws_s3_bucket", "values": {"region": "us-east-1"}}
+        ])
+        df = state_diff(before, after)
+        assert len(df) == 0
+
+    def test_empty_states(self) -> None:
+        empty = State(format_version="4")
+        df = state_diff(empty, empty)
+        assert len(df) == 0
+        assert "address" in df.columns
+        assert "diff_type" in df.columns
+
+    def test_fixture_states_are_identical(self, state: State) -> None:
+        df = state_diff(state, state)
+        assert len(df) == 0
+
+    def test_columns_present(self) -> None:
+        before = self._make_state([{"address": "aws_s3_bucket.a", "type": "aws_s3_bucket"}])
+        after = self._make_state([])
+        df = state_diff(before, after)
+        for col in ("address", "diff_type", "changed_attrs"):
+            assert col in df.columns
 
 
 class TestSummary:
