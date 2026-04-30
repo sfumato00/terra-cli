@@ -1,5 +1,11 @@
 # terra-cli
 
+[![PyPI](https://img.shields.io/pypi/v/terra-tf.svg)](https://pypi.org/project/terra-tf/)
+[![CI](https://github.com/sfumato00/terra-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/sfumato00/terra-cli/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-94%25-brightgreen.svg)](https://github.com/sfumato00/terra-cli)
+[![mypy: strict](https://img.shields.io/badge/mypy-strict-blue.svg)](https://mypy.readthedocs.io/en/stable/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
+
 A **notebook-native Terraform analysis toolkit**. Loads plans, state, and
 remote backends into pandas DataFrames; renders the dependency graph as an
 interactive Cytoscape widget; scores risky changes before `apply`.
@@ -41,7 +47,7 @@ BQuant JD. The W4 local-k3s drift demo is the proof point.
 |-------|--------|--------------|
 | W1 — schema + frame core | **done** | Pydantic models, DataFrame flatteners, loaders, CLI stub, 23 tests, 84% coverage |
 | W2 — magic + graph | **done** | `%%terraform` magic, ipycytoscape widget, filter panel |
-| W3 — remote state + risk | **done** | S3 loader, risk scorer (`score`, `blast_radius`, `user_data_diff`), `state_diff`, CLI `risk` command, 100 tests, 94% coverage |
+| W3 — remote state + risk | **done** | S3 loader, risk scorer (`score`, `blast_radius`, `user_data_diff`), `state_diff`, Parquet cache, CLI `risk` command, 104 tests, 94% coverage |
 | W4 — k3s drift (stretch) | planned | Local k3s drift DataFrame |
 
 ---
@@ -95,6 +101,11 @@ terra.graph.render(g_plan)
 
 # --- remote state (W3) ---
 state = terra.load.state_s3("my-tf-bucket", "prod/terraform.tfstate")
+
+# --- Parquet cache (W3) ---
+# First call parses JSON and writes the cache; subsequent calls skip the parse
+# when the cache file is fresher than the source.
+state = terra.load.state_cached("terraform.tfstate", "state.parquet")
 ```
 
 ### CLI
@@ -141,6 +152,7 @@ error and returns without raising, so the rest of the notebook continues.
 cd notebooks
 jupyter notebook 01_quickstart.ipynb           # W1: DataFrames
 jupyter notebook 02_dependency_graph.ipynb     # W2: graph + filter panel
+jupyter notebook 03_remote_state_and_risk.ipynb # W3: S3, cache, risk, state diff
 ```
 
 Both notebooks load `tests/fixtures/state.json` and `tests/fixtures/plan.json`

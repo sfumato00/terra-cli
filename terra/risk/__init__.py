@@ -38,7 +38,8 @@ def user_data_diff(changes: pd.DataFrame) -> list[dict[str, Any]]:
         return results
 
     for _, row in changes.iterrows():
-        attr_diff = row.get("attr_diff") or []
+        attr_diff_raw = row.get("attr_diff")
+        attr_diff = list(attr_diff_raw) if attr_diff_raw is not None else []
         for field in ("user_data", "user_data_base64"):
             if field not in attr_diff:
                 continue

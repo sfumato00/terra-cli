@@ -61,14 +61,36 @@ end on the committed fixture. ✓
 - [x] `terra.frame.state_diff(before, after)` — compare two `State`
       objects; return a DataFrame with `address`, `diff_type`, `changed_attrs`.
 - [x] `terra` CLI: `terra summary <plan>`, `terra resources <state>`, `terra risk <plan> [--high-only]`.
-- [ ] Parquet cache: `state.to_parquet(path)` round-trip via PyArrow; loader
-      skips re-parsing if cache fresher than source.
-- [ ] `notebooks/03_remote_state_and_risk.ipynb`
-- [ ] PyPI publish via GitHub Actions on tag (`v0.3.0`).
-- [ ] README badges: PyPI, CI, coverage, mypy strict.
+- [x] Parquet cache: `terra.load.state_to_parquet` / `state_from_parquet`
+      round-trip via PyArrow; `state_cached(source, cache)` skips re-parsing
+      if cache mtime ≥ source mtime. Tests in `tests/test_cache.py` cover
+      round-trip, miss, hit (corrupts source — proves no re-read), and stale
+      cache (forces re-parse).
+- [x] `notebooks/03_remote_state_and_risk.ipynb` — moto-backed `state_s3`,
+      `state_cached` round-trip, risk score, blast radius, `user_data_diff`,
+      `state_diff`. Executed end-to-end via nbconvert; outputs cleared.
+- [x] PyPI publish via GitHub Actions on tag (`v*.*.*`):
+      `.github/workflows/publish.yml` builds sdist+wheel via `python -m build`
+      and publishes through trusted-publisher OIDC (`pypa/gh-action-pypi-publish`).
+      Project version bumped to 0.3.0; classifiers + keywords added in
+      `pyproject.toml`.
+- [x] README badges: PyPI, CI, coverage, mypy strict, Python version.
+- [x] Bug fix discovered while validating notebook 03: `terra.risk.user_data_diff`
+      crashed on multi-element `attr_diff` (numpy ambiguous truth) because
+      `row.get(...) or []` evaluates the array in a boolean context. Replaced
+      with explicit `None` check + `list(...)` cast. All 34 risk tests + 104
+      total still green.
 
-**Deliverable:** `pip install terra-tf` from PyPI; the project is complete
-and shippable without any Kubernetes dependency.
+**Deliverable:** `pip install terra-tf` from PyPI (on tag push); the project
+is complete and shippable without any Kubernetes dependency. ✓
+
+**Self-test recipe (manual):**
+```bash
+pip install -e ".[dev,notebook]"
+pytest                           # 104 passed, 94% coverage
+jupyter nbconvert --to notebook --execute notebooks/03_remote_state_and_risk.ipynb \
+    --output /tmp/03_executed.ipynb   # runs end-to-end on fixtures
+```
 
 ## Weekend 4 — local k3s drift (stretch, v0.4)
 The base project ships at the end of W3. W4 is an optional capstone that
